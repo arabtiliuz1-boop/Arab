@@ -39,7 +39,19 @@ async function logMistake({ telegramUserId, wordId, mistakeType, userAnswer, cor
 }
 
 /**
+ * Berilgan id'lar bo'yicha to'liq so'z ma'lumotlarini oladi (quiz uchun kerak).
+ */
+async function getWordsByIds(ids) {
+  if (!ids || ids.length === 0) return [];
+  const { data, error } = await supabase.from(WORDS_TABLE).select('*').in('id', ids);
+  if (error) throw error;
+  return data;
+}
+
+/**
  * Foydalanuvchi eng ko'p xato qilgan so'z/qoidalarni oladi — kunlik "target drilling" uchun.
+ * Oxirgi xatolardan noyob so'z id'larini ajratib beradi (bir xil so'z bir necha marta
+ * xato qilingan bo'lishi mumkin, shuning uchun kattaroq oyna olib JS tomonda dedupe qilamiz).
  */
 async function getTopMistakes(telegramUserId, limit = 5) {
   const { data, error } = await supabase
@@ -47,10 +59,20 @@ async function getTopMistakes(telegramUserId, limit = 5) {
     .select('word_id, mistake_type, correct_answer')
     .eq('telegram_user_id', telegramUserId)
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(50);
 
   if (error) throw error;
-  return data;
+
+  const seen = new Set();
+  const unique = [];
+  for (const row of data) {
+    if (!seen.has(row.word_id)) {
+      seen.add(row.word_id);
+      unique.push(row);
+    }
+    if (unique.length >= limit) break;
+  }
+  return unique;
 }
 
-module.exports = { supabase, getWordGroup, logMistake, getTopMistakes };
+module.exports = { supabase, getWordGroup, getWordsByIds, logMistake, getTopMistakes };

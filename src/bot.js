@@ -1,6 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
-const { getWordGroup, logMistake } = require('./supabaseClient');
+const { getWordGroup, getWordsByIds, logMistake, getTopMistakes } = require('./supabaseClient');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -79,9 +79,10 @@ bot.action('start_quiz', async (ctx) => {
 async function sendQuizQuestion(ctx) {
   const session = sessions.get(ctx.from.id);
   const word = session.words[session.index];
+  const pool = session.distractorPool || session.words;
 
-  // Oddiy MCQ: to'g'ri tarjima + 3 ta tasodifiy noto'g'ri variant
-  const wrongOptions = session.words
+  // Oddiy MCQ: to'g'ri tarjima + 3 ta tasodifiy noto'g'ri variant (distractor pool'dan)
+  const wrongOptions = pool
     .filter((w) => w.id !== word.id)
     .sort(() => 0.5 - Math.random())
     .slice(0, 3)
@@ -136,14 +137,55 @@ bot.action(/^answer:(.+)$/, async (ctx) => {
   }
 });
 
+// ---------- PERSONAL TEACHER (XATOLAR ASOSIDA TAKRORLASH) ----------
+
+bot.hears('📊 Mening progressim', async (ctx) => {
+  try {
+    const mistakes = await getTopMistakes(ctx.from.id, 5);
+    if (!mistakes || mistakes.length === 0) {
+      return ctx.reply("Hali xato qilingan so'zlar yo'q — Lug'at bo'limida test yeching, men xatolaringizni kuzatib boraman.");
+    }
+
+    const list = mistakes.map((m, i) => `${i + 1}. ${m.correct_answer}`).join('\n');
+    await ctx.reply(
+      `🧠 Sizning eng ko'p adashgan so'zlaringiz:\n\n${list}\n\nShu so'zlar ustida maxsus mashq qilamizmi?`,
+      Markup.inlineKeyboard([Markup.button.callback('🔁 Shu so\'zlarni mashq qilish', 'drill_mistakes')])
+    );
+  } catch (err) {
+    console.error(err);
+    ctx.reply('Xatolik yuz berdi.');
+  }
+});
+
+bot.action('drill_mistakes', async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    const mistakes = await getTopMistakes(ctx.from.id, 5);
+    const wordIds = mistakes.map((m) => m.word_id).filter(Boolean);
+    const mistakeWords = await getWordsByIds(wordIds);
+
+    // Variant tanlash uchun yetarli distractor bo'lishi uchun 1-guruhni ham qo'shib qo'yamiz
+    const basePool = await getWordGroup(1);
+    const distractorPool = [...mistakeWords, ...basePool.filter((w) => !wordIds.includes(w.id))];
+
+    sessions.set(ctx.from.id, {
+      words: mistakeWords,
+      distractorPool,
+      index: 0,
+      mode: 'quiz',
+      correctCount: 0,
+    });
+    await sendQuizQuestion(ctx);
+  } catch (err) {
+    console.error(err);
+    ctx.reply('Xatolik yuz berdi.');
+  }
+});
+
 // ---------- STUB'LAR — keyingi bosqichda to'ldiriladi ----------
 
 bot.hears('🗣 AI Speaking', (ctx) => {
   ctx.reply("AI Speaking funksiyasi tez orada qo'shiladi (Whisper + AI tahlil).");
-});
-
-bot.hears('📊 Mening progressim', (ctx) => {
-  ctx.reply("Progress paneli tez orada — user_mistakes jadvali asosida qurilamiz.");
 });
 
 bot.launch();

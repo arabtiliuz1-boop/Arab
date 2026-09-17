@@ -75,4 +75,63 @@ async function getTopMistakes(telegramUserId, limit = 5) {
   return unique;
 }
 
-module.exports = { supabase, getWordGroup, getWordsByIds, logMistake, getTopMistakes };
+/**
+ * Yangi foydalanuvchini ro'yxatga oladi (yoki mavjud bo'lsa hech narsa qilmaydi).
+ */
+async function registerUser(telegramUserId, firstName) {
+  const { error } = await supabase
+    .from('bot_users')
+    .upsert({ telegram_user_id: telegramUserId, first_name: firstName }, { onConflict: 'telegram_user_id', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+/**
+ * Jami ro'yxatdan o'tgan foydalanuvchilar sonini qaytaradi.
+ */
+async function getUserCount() {
+  const { count, error } = await supabase
+    .from('bot_users')
+    .select('*', { count: 'exact', head: true });
+  if (error) throw error;
+  return count;
+}
+
+/**
+ * Foydalanuvchining shaxsiy lug'atiga yangi so'z qo'shadi (tarjima yoki AI taklifi).
+ */
+async function saveUserVocabWord(telegramUserId, { arabic, uzbek, exampleArabic, exampleUzbek, source }) {
+  const { error } = await supabase.from('user_vocabulary').insert({
+    telegram_user_id: telegramUserId,
+    arabic,
+    uzbek,
+    example_arabic: exampleArabic || null,
+    example_uzbek: exampleUzbek || null,
+    source: source || 'translation',
+  });
+  if (error) throw error;
+}
+
+/**
+ * Foydalanuvchining shaxsiy lug'atida hozircha nechta so'z borligini qaytaradi —
+ * bu son AI uchun "daraja" proksisi sifatida ishlatiladi (ko'p so'z = yuqoriroq daraja).
+ */
+async function getUserVocabCount(telegramUserId) {
+  const { count, error } = await supabase
+    .from('user_vocabulary')
+    .select('*', { count: 'exact', head: true })
+    .eq('telegram_user_id', telegramUserId);
+  if (error) throw error;
+  return count;
+}
+
+module.exports = {
+  supabase,
+  getWordGroup,
+  getWordsByIds,
+  logMistake,
+  getTopMistakes,
+  registerUser,
+  getUserCount,
+  saveUserVocabWord,
+  getUserVocabCount,
+};

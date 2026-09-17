@@ -182,11 +182,65 @@ bot.action('drill_mistakes', async (ctx) => {
   }
 });
 
-// ---------- STUB'LAR — keyingi bosqichda to'ldiriladi ----------
+// ---------- AI SPEAKING (GEMINI ORQALI OVOZ TAHLILI) ----------
 
 bot.hears('🗣 AI Speaking', (ctx) => {
-  ctx.reply("AI Speaking funksiyasi tez orada qo'shiladi (Whisper + AI tahlil).");
+  ctx.reply(
+    "Menga arabcha ovozli xabar yuboring — masalan, o'zingiz haqingizda 2-3 gap ayting.\n\nMen uni tinglab, talaffuz, grammatika va so'z boyligingizni tahlil qilaman."
+  );
 });
+
+bot.on('voice', async (ctx) => {
+  try {
+    await ctx.reply('⏳ Tahlil qilinmoqda...');
+
+    const fileLink = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
+    const audioResponse = await fetch(fileLink.href);
+    const audioBuffer = await audioResponse.arrayBuffer();
+    const audioBase64 = Buffer.from(audioBuffer).toString('base64');
+
+    const feedback = await analyzeSpeech(audioBase64);
+    await ctx.reply(feedback);
+  } catch (err) {
+    console.error('Speech analysis failed:', err);
+    ctx.reply("Tahlil qilishda xatolik yuz berdi. GEMINI_API_KEY to'g'ri kiritilganini tekshiring.");
+  }
+});
+
+async function analyzeSpeech(audioBase64) {
+  const prompt = `Siz professional arab tili ustozisiz. Foydalanuvchi arabcha gapirdi (ovozli xabar sifatida).
+Vazifangiz:
+1. Aytilgan gapni arab yozuvida transkripsiya qiling.
+2. Uni o'zbek tiliga tarjima qiling.
+3. Talaffuz (imkon qadar), grammatika va so'z boyligi bo'yicha IELTS Speaking uslubida 1-9 shkala bo'yicha baho bering.
+4. Asosiy xatolarni aniq ko'rsating va qanday tuzatish kerakligini tushuntiring.
+Javobni o'zbek tilida, aniq va tushunarli formatda bering.`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: 'audio/ogg', data: audioBase64 } },
+            ],
+          },
+        ],
+      }),
+    }
+  );
+
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return (
+    data.candidates?.[0]?.content?.parts?.[0]?.text ||
+    "Tahlil qaytmadi, qayta urinib ko'ring."
+  );
+}
 
 bot.launch();
 console.log('Bot ishga tushdi...');

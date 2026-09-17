@@ -1,6 +1,15 @@
 const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
-const { getWordGroup, getWordsByIds, logMistake, getTopMistakes } = require('./supabaseClient');
+const {
+  getWordGroup,
+  getWordsByIds,
+  logMistake,
+  getTopMistakes,
+  registerUser,
+  getUserCount,
+  saveUserVocabWord,
+  getUserVocabCount,
+} = require('./supabaseClient');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -11,15 +20,26 @@ const sessions = new Map();
 function mainMenu() {
   return Markup.keyboard([
     ['📚 Lug\'at', '🗣 AI Speaking'],
+    ['🔄 Tarjima', '🎯 AI\'dan yangi so\'z'],
     ['📊 Mening progressim'],
   ]).resize();
 }
 
-bot.start((ctx) => {
-  ctx.reply(
-    `Assalomu alaykum, ${ctx.from.first_name}! Men sizning shaxsiy arab tili ustozingizman.\n\nQuyidagilardan birini tanlang:`,
-    mainMenu()
-  );
+bot.start(async (ctx) => {
+  try {
+    await registerUser(ctx.from.id, ctx.from.first_name);
+    const count = await getUserCount();
+    ctx.reply(
+      `Assalomu alaykum, ${ctx.from.first_name}! Men sizning shaxsiy arab tili ustozingizman.\n\n👥 Hozirgacha ${count} kishi shu botdan foydalanmoqda.\n\nQuyidagilardan birini tanlang:`,
+      mainMenu()
+    );
+  } catch (err) {
+    console.error('Register/count failed:', err);
+    ctx.reply(
+      `Assalomu alaykum, ${ctx.from.first_name}! Men sizning shaxsiy arab tili ustozingizman.\n\nQuyidagilardan birini tanlang:`,
+      mainMenu()
+    );
+  }
 });
 
 // ---------- LUG'AT (VOCABULARY) OQIMI ----------
@@ -243,6 +263,109 @@ Javobni o'zbek tilida, aniq va tushunarli formatda bering.`;
     data.candidates?.[0]?.content?.parts?.[0]?.text ||
     "Tahlil qaytmadi, qayta urinib ko'ring."
   );
+}
+
+// ---------- TARJIMA (avtomatik shaxsiy lug'atga qo'shish bilan) ----------
+
+bot.hears('🔄 Tarjima', (ctx) => {
+  ctx.reply(
+    "Menga istalgan arabcha yoki o'zbekcha so'z/gap yuboring — tarjima qilib beraman va sizning shaxsiy lug'atingizga qo'shib qo'yaman."
+  );
+});
+
+// Callback Gemini'dan har doim toza JSON qaytarishi uchun responseMimeType ishlatamiz
+async function callGeminiJSON(prompt) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    }
+  );
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  return JSON.parse(text);
+}
+
+// "🔄 Tarjima" tugmasidan keyingi har qanday oddiy matn xabari — tarjima so'rovi deb qabul qilinadi.
+// MUHIM: bu handler barcha bot.hears(...) larDAN KEYIN turishi kerak, aks holda menyu tugmalarini "yeb qo'yadi".
+bot.on('text', async (ctx) => {
+  const userText = ctx.message.text;
+  try {
+    const prompt = `Siz arab-o'zbek tarjimon va lug'at tuzuvchisiz. Quyidagi matnni tahlil qiling: "${userText}"
+Agar u arabcha bo'lsa — o'zbekchaga, agar o'zbekcha bo'lsa — arabchaga tarjima qiling.
+Faqat quyidagi aniq JSON formatida javob bering, boshqa hech narsa yozmang:
+{"arabic": "...", "uzbek": "...", "example_arabic": "...", "example_uzbek": "..."}
+example_arabic va example_uzbek — shu so'z/gap ishlatilgan qisqa, tabiiy misol jumlalar (bir-birining tarjimasi).`;
+
+    const result = await callGeminiJSON(prompt);
+
+    await saveUserVocabWord(ctx.from.id, {
+      arabic: result.arabic,
+      uzbek: result.uzbek,
+      exampleArabic: result.example_arabic,
+      exampleUzbek: result.example_uzbek,
+      source: 'translation',
+    });
+
+    await ctx.reply(
+      `${result.arabic}\n🇺🇿 ${result.uzbek}\n\nMisol: ${result.example_arabic || ''}\n${result.example_uzbek || ''}\n\n✅ Shaxsiy lug'atingizga qo'shildi.`
+    );
+  } catch (err) {
+    console.error('Translation failed:', err);
+    ctx.reply("Tarjima qilishda xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring.");
+  }
+});
+
+// ---------- AI'DAN DARAJAGA MOS YANGI SO'Z ----------
+
+bot.hears("🎯 AI'dan yangi so'z", async (ctx) => {
+  try {
+    const vocabCount = await saveGuardedVocabCount(ctx.from.id);
+    const level = vocabCount < 10 ? 'juda oddiy, asosiy (A1)' : vocabCount < 30 ? "o'rta (A2-B1)" : 'murakkabroq (B2+)';
+
+    const prompt = `Siz arab tili ustozisiz. Foydalanuvchi darajasi: ${level} (u hozirgacha ${vocabCount} ta so'z o'rgangan).
+Shu darajaga mos, foydali va tez-tez ishlatiladigan bitta YANGI arabcha so'z tanlang (fe'l, ot yoki sifat bo'lishi mumkin).
+Faqat quyidagi aniq JSON formatida javob bering, boshqa hech narsa yozmang:
+{"arabic": "...", "uzbek": "...", "example_arabic": "...", "example_uzbek": "...", "usage_note": "..."}
+usage_note — bu so'zni ishlatishda e'tibor berish kerak bo'lgan qisqa grammatik eslatma (o'zbek tilida).`;
+
+    const result = await callGeminiJSON(prompt);
+
+    await saveUserVocabWord(ctx.from.id, {
+      arabic: result.arabic,
+      uzbek: result.uzbek,
+      exampleArabic: result.example_arabic,
+      exampleUzbek: result.example_uzbek,
+      source: 'ai_suggested',
+    });
+
+    await ctx.reply(
+      `🎯 Sizga mos yangi so'z:\n\n${result.arabic}\n🇺🇿 ${result.uzbek}\n\nMisol: ${result.example_arabic || ''}\n${result.example_uzbek || ''}` +
+        (result.usage_note ? `\n\n💡 ${result.usage_note}` : '') +
+        `\n\n✅ Shaxsiy lug'atingizga qo'shildi.`
+    );
+  } catch (err) {
+    console.error('AI word suggestion failed:', err);
+    ctx.reply('Xatolik yuz berdi.');
+  }
+});
+
+async function saveGuardedVocabCount(telegramUserId) {
+  try {
+    return await getUserVocabCount(telegramUserId);
+  } catch (err) {
+    console.error('Vocab count failed:', err);
+    return 0;
+  }
 }
 
 bot.launch();
